@@ -9,7 +9,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_data(file_path="tweets_ukraine.csv", sample_size=20):
+def load_data(file_path="data/tweets_ukraine.csv", sample_size=20):
     try:
         df = pd.read_csv(file_path)
         texts = df["text"].tolist()[:sample_size]
