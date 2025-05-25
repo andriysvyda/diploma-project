@@ -1,21 +1,33 @@
-# train_roberta.py - максимально спрощений робочий варіант
+# train_roberta.py
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments
 from sklearn.model_selection import train_test_split
 import pandas as pd
+import re
+import pymorphy2
 import logging
 
 # Налаштування логування
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger()
+
+# Ініціалізація лематизатора
+morph = pymorphy2.MorphAnalyzer(lang='uk')
+
+def preprocess_text(text):
+    """Очищення та лематизація тексту"""
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'#\w+', '', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    text = text.lower()
+    words = text.split()
+    lemmatized_words = [morph.parse(word)[0].normal_form for word in words]
+    return ' '.join(lemmatized_words)
 
 def load_data(file_path="classified_tweets.csv"):
     df = pd.read_csv(file_path)
-    texts = df['text'].astype(str).tolist()
+    df['text'] = df['text'].astype(str).apply(preprocess_text)
+    texts = df['text'].tolist()
     topics = df['topic'].tolist()
     unique_topics = list(set(topics))
     label_map = {t: i for i, t in enumerate(unique_topics)}
@@ -49,47 +61,48 @@ class SimpleDataset(torch.utils.data.Dataset):
 def train_model():
     try:
         logger.info("Початок тренування...")
-        
-        # 1. Завантаження даних
         texts, labels, label_map = load_data()
         train_texts, val_texts, train_labels, val_labels = train_test_split(
             texts, labels, test_size=0.2, random_state=42
         )
         
-        # 2. Завантаження моделі
-        tokenizer = AutoTokenizer.from_pretrained("roberta-base")
+        # Використання мультимовної моделі
+        tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base")
         model = AutoModelForSequenceClassification.from_pretrained(
-            "roberta-base",
+            "xlm-roberta-base",
             num_labels=len(label_map)
         )
         
-        # 3. Підготовка даних
         train_dataset = SimpleDataset(train_texts, train_labels, tokenizer)
+        val_dataset = SimpleDataset(val_texts, val_labels, tokenizer)
         
-        # 4. Налаштування тренування
         training_args = TrainingArguments(
             output_dir='./results',
-            num_train_epochs=1,  # Зменшено для тесту
-            per_device_train_batch_size=4,  # Зменшено для тесту
-            save_strategy='no'  # Вимкнено збереження проміжних результатів
+            num_train_epochs=3,  # Збільшено для кращого навчання
+            per_device_train_batch_size=8,
+            per_device_eval_batch_size=8,
+            evaluation_strategy="epoch",  # Оцінка після кожної епохи
+            save_strategy="epoch",
+            load_best_model_at_end=True
         )
         
-        # 5. Тренування
         trainer = Trainer(
             model=model,
             args=training_args,
-            train_dataset=train_dataset
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
+            compute_metrics=lambda eval_pred: {
+                "accuracy": accuracy_score(eval_pred.label_ids, eval_pred.predictions.argmax(-1)),
+                "f1": f1_score(eval_pred.label_ids, eval_pred.predictions.argmax(-1), average="weighted")
+            }
         )
         trainer.train()
         
-        logger.info("Тестове тренування завершено!")
+        logger.info("Тренування завершено!")
         
     except Exception as e:
         logger.error(f"Помилка: {str(e)}")
-        logger.info("\nЯкщо виникає помилка з accelerate, спробуйте:")
-        logger.info("1. pip install 'accelerate>=0.26.0'")
-        logger.info("2. pip install transformers[torch]")
-        logger.info("3. Перезапустіть середовище Python")
 
 if __name__ == "__main__":
+    from sklearn.metrics import accuracy_score, f1_score
     train_model()
